@@ -4,8 +4,15 @@
 #include <iostream>
 #include <memory.h>
 #include <sys/socket.h>
+#include <fstream>
+#include <filesystem>
+#include <set>
 
 const int BACKLOG = 10;
+
+void send_file(int client_fd, std::string route);
+
+std::set<std::string> routes = {"/", "/index.html", "/style.css" ,"/script_password_chage.js"};
 
 WebServer::WebServer(std::string port) {
     addrinfo hints = {};
@@ -15,7 +22,6 @@ WebServer::WebServer(std::string port) {
 
     addrinfo *server_info;
 
-    std::cout << port.c_str() << std::endl;
     int rv = getaddrinfo(nullptr, port.c_str(), &hints, &server_info);
     if (rv) {
         std::cout << "getaddrinfo error: " << gai_strerror(rv) << std::endl;
@@ -55,7 +61,7 @@ WebServer::WebServer(std::string port) {
         exit(1);
     }
 
-    std::cout << "Server is running on port " << port << std::endl;
+    std::cout << "Server is running on http://localhost:" << port << std::endl;
 }
 
 void WebServer::run() {
@@ -78,9 +84,62 @@ void WebServer::run() {
         std::cout << client_addr_string << " connected" << std::endl;
         char buffer[1024] = {};
         read(client_fd, buffer, 1024);
-        std::cout << buffer << std::endl;
-        auto answer = "HTTP/1.1 200 OK\n\nHello, world";
+        std::cout << buffer << std::endl << std::endl;
+
+        auto request = std::string(buffer);
+
+        auto route_start = request.find(" ") + 1;
+        auto route_end = request.find("HTTP");
+        if (route_end == std::string::npos) {
+            close(client_fd);
+            continue;
+        }
+
+        auto route = request.substr(route_start, route_end - route_start - 1);
+        std::cout << "Route: \"" << route << "\"" << std::endl;
+
+        if (!routes.count(route)) {
+            const auto answer = "HTTP/1.1 404 Not Found\n\n";
+            close(client_fd);
+            send(client_fd, answer, strlen(answer), 0);
+            continue;
+        }
+
+        const auto answer = "HTTP/1.1 200 OK\n";
         send(client_fd, answer, strlen(answer), 0);
+        if (route == "/") {
+            send_file(client_fd, "/index.html");
+        } else {
+            send_file(client_fd, route);
+        }
+
         close(client_fd);
     }
+}
+
+void send_file(int client_fd, std::string route) {
+    auto filename = "../public" + route;
+
+    auto file_size = std::filesystem::file_size(filename);
+    printf("File size: %ld\n", file_size);
+    auto content_length_header = "Content-Length: " + std::to_string(file_size) + "\n\n";
+    send(client_fd, content_length_header.c_str(), content_length_header.size(), 0);
+
+    std::ifstream file(filename, std::ios::in | std::ios::binary);
+    if (!file.is_open()) {
+        std::cout << "File not found" << std::endl;
+        return;
+    }
+
+    char buffer[1024] = {};
+    while (file) {
+        file.read(buffer, 1024);
+        auto bytes_sent = send(client_fd, buffer, file.gcount(), 0);
+        if (bytes_sent == -1) {
+            perror("send");
+            break;
+        }
+        memset(buffer, 0, sizeof buffer);
+    }
+    file.close();
 }
