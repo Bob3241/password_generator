@@ -6,5 +6,7 @@ public:
     void run();
 
 private:
+    int acceptClientConnection();
+
     int socket_fd;
 };

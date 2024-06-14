@@ -1,19 +1,16 @@
-#include "./web_server.h"
-#include "./socket_os.h"
 #include <cstdio>
 #include <iostream>
 #include <memory.h>
-#include <sys/socket.h>
-#include <fstream>
-#include <filesystem>
 #include <set>
+
+#include "socket_os.h"
+#include "utils.h"
+#include "web_server.h"
 
 const int BACKLOG = 10;
 
-void send_file(int client_fd, std::string route);
-std::string get_route(std::string request);
-
-std::set<std::string> routes = {"/", "/index.html", "/style.css" ,"/script_password_chage.js"};
+std::set<std::string> routes = {"/", "/index.html", "/style.css",
+                                "/script_password_chage.js"};
 
 WebServer::WebServer(std::string port) {
     addrinfo hints = {};
@@ -65,44 +62,45 @@ WebServer::WebServer(std::string port) {
     std::cout << "Server is running on http://localhost:" << port << std::endl;
 }
 
+int WebServer::acceptClientConnection() {
+    sockaddr_storage client_addr;
+    socklen_t sin_size = sizeof client_addr;
+
+    int client_fd = accept(socket_fd, (sockaddr *)&client_addr, &sin_size);
+    if (client_fd == -1) {
+        perror("accept");
+        std::cout << socket_fd << std::endl;
+        return -1;
+    }
+
+    char client_addr_string[INET6_ADDRSTRLEN];
+    inet_ntop(client_addr.ss_family, &((sockaddr_in *)&client_addr)->sin_addr,
+              client_addr_string, sizeof client_addr_string);
+
+    std::cout << client_addr_string << " connected" << std::endl;
+    return client_fd;
+}
+
 void WebServer::run() {
     while (1) {
-        sockaddr_storage client_addr;
-        socklen_t sin_size = sizeof client_addr;
+        auto client_fd = acceptClientConnection();
 
-        int client_fd = accept(socket_fd, (sockaddr *)&client_addr, &sin_size);
-        if (client_fd == -1) {
-            perror("accept");
-            std::cout << socket_fd << std::endl;
-            continue;
-        }
-
-        char client_addr_string[INET6_ADDRSTRLEN];
-        inet_ntop(client_addr.ss_family,
-                  &((sockaddr_in *)&client_addr)->sin_addr, client_addr_string,
-                  sizeof client_addr_string);
-
-        std::cout << client_addr_string << " connected" << std::endl;
         char buffer[1024] = {};
         read(client_fd, buffer, 1024);
         std::cout << buffer << std::endl << std::endl;
 
         auto request = std::string(buffer);
 
-        auto route = get_route(request);
-        if (route == "") {
-            const auto answer = "HTTP/1.1 400 Bad Request\n\n";
-            send(client_fd, answer, strlen(answer), 0);
-            close(client_fd);
+        auto route_opt = get_route(request);
+        if (!route_opt) {
+            send_error_and_close(client_fd, ErrorStatus::BAD_REQUEST);
             continue;
         }
 
+        auto route = *route_opt;
         std::cout << "Route: \"" << route << "\"" << std::endl;
-
         if (!routes.count(route)) {
-            const auto answer = "HTTP/1.1 404 Not Found\n\n";
-            close(client_fd);
-            send(client_fd, answer, strlen(answer), 0);
+            send_error_and_close(client_fd, ErrorStatus::NOT_FOUND);
             continue;
         }
 
@@ -114,47 +112,4 @@ void WebServer::run() {
 
         close(client_fd);
     }
-}
-
-void send_file(int client_fd, std::string route) {
-    auto filename = "../public" + route;
-
-    std::ifstream file(filename, std::ios::in | std::ios::binary);
-    if (!file.is_open()) {
-        const auto answer = "HTTP/1.1 404 Not Found\n\n";
-        send(client_fd, answer, strlen(answer), 0);
-
-        std::cout << "File not found" << std::endl;
-        return;
-    }
-
-    const auto answer = "HTTP/1.1 200 OK\n";
-    send(client_fd, answer, strlen(answer), 0);
-
-    auto file_size = std::filesystem::file_size(filename);
-    printf("File size: %ld\n", file_size);
-    auto content_length_header = "Content-Length: " + std::to_string(file_size) + "\n\n";
-    send(client_fd, content_length_header.c_str(), content_length_header.size(), 0);
-
-    char buffer[1024] = {};
-    while (file) {
-        file.read(buffer, 1024);
-        auto bytes_sent = send(client_fd, buffer, file.gcount(), 0);
-        if (bytes_sent == -1) {
-            perror("send");
-            break;
-        }
-        memset(buffer, 0, sizeof buffer);
-    }
-    file.close();
-}
-
-std::string get_route(std::string request) {
-        auto route_start = request.find(" ") + 1;
-        auto route_end = request.find("HTTP");
-        if (route_end == std::string::npos) {
-            return "";
-        }
-
-        return request.substr(route_start, route_end - route_start - 1);
 }
