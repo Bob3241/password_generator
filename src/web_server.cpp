@@ -1,5 +1,5 @@
 #include "./web_server.h"
-#include "./socket.h"
+#include "./socket_os.h"
 #include <cstdio>
 #include <iostream>
 #include <memory.h>
@@ -11,6 +11,7 @@
 const int BACKLOG = 10;
 
 void send_file(int client_fd, std::string route);
+std::string get_route(std::string request);
 
 std::set<std::string> routes = {"/", "/index.html", "/style.css" ,"/script_password_chage.js"};
 
@@ -88,14 +89,14 @@ void WebServer::run() {
 
         auto request = std::string(buffer);
 
-        auto route_start = request.find(" ") + 1;
-        auto route_end = request.find("HTTP");
-        if (route_end == std::string::npos) {
+        auto route = get_route(request);
+        if (route == "") {
+            const auto answer = "HTTP/1.1 400 Bad Request\n\n";
+            send(client_fd, answer, strlen(answer), 0);
             close(client_fd);
             continue;
         }
 
-        auto route = request.substr(route_start, route_end - route_start - 1);
         std::cout << "Route: \"" << route << "\"" << std::endl;
 
         if (!routes.count(route)) {
@@ -105,8 +106,6 @@ void WebServer::run() {
             continue;
         }
 
-        const auto answer = "HTTP/1.1 200 OK\n";
-        send(client_fd, answer, strlen(answer), 0);
         if (route == "/") {
             send_file(client_fd, "/index.html");
         } else {
@@ -120,16 +119,22 @@ void WebServer::run() {
 void send_file(int client_fd, std::string route) {
     auto filename = "../public" + route;
 
+    std::ifstream file(filename, std::ios::in | std::ios::binary);
+    if (!file.is_open()) {
+        const auto answer = "HTTP/1.1 404 Not Found\n\n";
+        send(client_fd, answer, strlen(answer), 0);
+
+        std::cout << "File not found" << std::endl;
+        return;
+    }
+
+    const auto answer = "HTTP/1.1 200 OK\n";
+    send(client_fd, answer, strlen(answer), 0);
+
     auto file_size = std::filesystem::file_size(filename);
     printf("File size: %ld\n", file_size);
     auto content_length_header = "Content-Length: " + std::to_string(file_size) + "\n\n";
     send(client_fd, content_length_header.c_str(), content_length_header.size(), 0);
-
-    std::ifstream file(filename, std::ios::in | std::ios::binary);
-    if (!file.is_open()) {
-        std::cout << "File not found" << std::endl;
-        return;
-    }
 
     char buffer[1024] = {};
     while (file) {
@@ -142,4 +147,14 @@ void send_file(int client_fd, std::string route) {
         memset(buffer, 0, sizeof buffer);
     }
     file.close();
+}
+
+std::string get_route(std::string request) {
+        auto route_start = request.find(" ") + 1;
+        auto route_end = request.find("HTTP");
+        if (route_end == std::string::npos) {
+            return "";
+        }
+
+        return request.substr(route_start, route_end - route_start - 1);
 }
